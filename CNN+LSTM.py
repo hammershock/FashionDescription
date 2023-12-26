@@ -1,3 +1,30 @@
+"""
+CNN+LSTM for Image Captioning
+
+This module contains the implementation of a combined CNN and LSTM model for the
+task of image captioning. The model utilizes a Convolutional Neural Network (ConvNet)
+as an image encoder to extract visual features from images, and a Long Short-Term
+Memory (LSTM) network as a text decoder to generate descriptive captions for the images.
+
+The script includes the model's architecture, training loop, and inference logic. It
+also demonstrates the use of the model with a custom dataset loader, vocabulary
+processing, and image transformations.
+
+This file is a Python script version of the 'CNN+LSTM.ipynb' Jupyter notebook.
+
+Author: zhanghanmo2021213368, hammershock
+Date: 2023/10/26
+License: MIT License
+Usage: Intended for use in [Project Name/Description] as part of image captioning tasks.
+
+Dependencies:
+- PyTorch: for model construction and training
+- PIL: for image processing
+- Torchvision: for image transformations
+- tqdm: for progress bar visualization
+- numpy: for numerical operations
+"""
+
 from datetime import datetime, timedelta
 import os
 
@@ -55,7 +82,7 @@ class ImageTextModel(nn.Module):
     CNN做图像编码器，得到整体特征；LSTM做文本解码器，输出图像描述序列
     """
 
-    def __init__(self, vocabulary_size, in_channels, image_embed_dim, text_embed_dim, hidden_size=512,
+    def __init__(self, vocabulary_size, in_channels, image_embed_dim, text_embed_dim, hidden_size=256,
                  pretrained_embeddings=None):
         super(ImageTextModel, self).__init__()
 
@@ -73,9 +100,10 @@ class ImageTextModel(nn.Module):
 
     def forward(self, images, seq, hidden_state: tuple = None, image_feats=None):
         """
+        将图像整体特征嵌入与拼接到序列的每一个时间步上，构成RNN的原始输入
         :param images: (batch, channels, img_size, img_size)
         :param seq: (batch, seq_len)
-        :param hidden_state
+        :param hidden_state: RNN（LSTM）隐含状态: (h, c)
         :param image_feats: 图像特征
         :return:
         """
@@ -164,24 +192,27 @@ if __name__ == "__main__":
     # =========== Example parameters for the model ===========
     img_size = 256  # Size of the input image
     in_channels = 3  # Number of input channels (for RGB images)
-    text_emb_size = 96  # Embedding size
-    img_emb_size = 64
-    hidden_size = 256
+    text_emb_size = 96  # Text Embedding size
+    img_emb_size = 64  # Image Embedding size
+    hidden_size = 256  # LSTM Hiddem size
     dropout = 0.1  # Dropout rate
     lr = 5e-4  # Learning rate
-    epochs = 500
+    epochs = 500  # train epochs
     batch_size = 64  # Batch size
     seq_length = 128  # Max length of the caption sequence
-    image_embed_dim = 64
-    text_embed_dim = 96
-    channels = 3
-    save_path = 'models/model_transformer.pth'
+    save_path = 'models/model_lstm.pth'
     experiment_name = 'fashion_description_lstm'
+    vocabulary_path = 'vocabulary/vocab.json'
+    word2vec_cache_path = 'vocabulary/word2vec.npy'
+    dataset_root = 'data/deepfashion-multimodal'
+    train_labels_path = 'data/deepfashion-multimodal/train_captions.json'
+    test_labels_path = 'data/deepfashion-multimodal/test_captions.json'
+
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
     # ==================== Build Vocabulary ====================
 
-    vocabulary = Vocabulary('vocabulary/vocab.json')
+    vocabulary = Vocabulary(vocabulary_path)
 
     # ==================== Define image transforms ====================
 
@@ -193,17 +224,17 @@ if __name__ == "__main__":
 
     # ==================== Initialize the model ====================
     model = ImageTextModel(len(vocabulary), in_channels, img_emb_size, text_emb_size, hidden_size,
-                           pretrained_embeddings=vocabulary.get_word2vec(cache_path='vocabulary/word2vec.npy')).to(device)
+                           pretrained_embeddings=vocabulary.get_word2vec(cache_path=word2vec_cache_path)).to(device)
 
-    model.load_state_dict(torch.load('models/model_lstm.pth'))
+    model.load_state_dict(torch.load(save_path))
 
     # ==================== Prepare for training ====================
-    train_set = ImageTextDataset('data/deepfashion-multimodal',
-                                   'data/deepfashion-multimodal/train_captions.json',
-                                   vocabulary=vocabulary,
-                                   max_seq_len=seq_length,
-                                   transform=transform,
-                                   max_cache_memory=32 * 1024 ** 3)
+    train_set = ImageTextDataset(dataset_root,
+                                 train_labels_path,
+                                 vocabulary=vocabulary,
+                                 max_seq_len=seq_length,
+                                 transform=transform,
+                                 max_cache_memory=32 * 1024 ** 3)
 
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
 
@@ -211,11 +242,11 @@ if __name__ == "__main__":
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     # =================== Start Training ===================
-    # train(model, train_loader, criterion, optimizer,
-    #       save_path='models/model_lstm.pth',
-    #       device=device,
-    #       epochs=epochs,
-    #       experiment_name='lstm')
+    train(model, train_loader, criterion, optimizer,
+          save_path=save_path,
+          device=device,
+          epochs=epochs,
+          experiment_name=experiment_name)
 
     #  =================== Model Inference ===================
     image_path, caption = train_set.sample()

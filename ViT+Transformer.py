@@ -1,10 +1,34 @@
-import json
+"""
+ViT+Transformer for Image Captioning
+
+This module implements an image captioning model combining Vision Transformer (ViT) and
+Transformer. The ViT serves as an image encoder, converting input images into a sequence of
+embedding vectors. These vectors are then fed into a Transformer decoder to generate
+descriptive captions. The model supports custom positional embeddings, attention mechanisms,
+and various utilities for image-text processing.
+
+This script is a Python implementation of the 'ViT+Transformer.ipynb' Jupyter notebook,
+adapted for standalone use and further development.
+
+Author: zhanghanmo2021213368, hammershock
+Date: 2023/10/26
+License: MIT License
+Usage: This file is part of the [Project Name/Description], specifically designed for
+       tasks involving image captioning with ViT and Transformer architecture.
+
+Dependencies:
+- PyTorch: for model construction, training, and inference
+- PIL: for image processing
+- Matplotlib: for visualization
+- Torchvision: for image transformations
+- tqdm: for progress bar visualization
+- Other custom modules: datasets.py and vocabulary.py for data handling and text processing
+"""
+
 import math
 import os
-import random
 from functools import partial
 
-import numpy as np
 import torch
 import torch.nn as nn
 from PIL import Image
@@ -21,6 +45,7 @@ from vocabulary import Vocabulary
 
 
 class PatchEmbedding(nn.Module):
+    """ViT嵌入层，通过将原始图像分为若干个小块，分别嵌入，然后展平为序列"""
     def __init__(self, in_channels: int, patch_size: int, emb_size: int, img_size: int):
         super().__init__()
         self.patch_size = patch_size
@@ -35,6 +60,7 @@ class PatchEmbedding(nn.Module):
 
 
 class FeedForward(nn.Module):
+    """编码器、解码器点对点前馈层"""
     def __init__(self, emb_size: int, expansion: int, dropout: float):
         super().__init__()
         self.fc1 = nn.Linear(emb_size, expansion * emb_size)
@@ -49,6 +75,7 @@ class FeedForward(nn.Module):
 
 
 class TransformerEncoderLayer(nn.Module):
+    """ViT编码器层"""
     def __init__(self, emb_size: int, num_heads: int, expansion: int, dropout: float):
         super().__init__()
         self.norm1 = nn.LayerNorm(emb_size)
@@ -66,6 +93,7 @@ class TransformerEncoderLayer(nn.Module):
 
 
 class VisionTransformerEncoder(nn.Module):
+    """ViT编码器"""
     def __init__(self, in_channels: int, patch_size: int, img_size: int, emb_size: int, num_layers: int, num_heads: int,
                  expansion: int, dropout: float):
         super().__init__()
@@ -93,6 +121,7 @@ class VisionTransformerEncoder(nn.Module):
 
 
 def create_masks(target_seq, pad_idx, num_heads):
+    """创建目标序列注意力掩码"""
     # 创建三角掩码
     seq_len = target_seq.size(1)
     triangular_mask = torch.triu(torch.ones((seq_len, seq_len), device=target_seq.device) * float('-inf'), diagonal=1)
@@ -112,6 +141,7 @@ def create_masks(target_seq, pad_idx, num_heads):
 
 
 class DecoderLayer(nn.Module):
+    """transformer解码器层"""
     def __init__(self, emb_size, num_heads, expansion, dropout):
         super(DecoderLayer, self).__init__()
         self.norm1 = nn.LayerNorm(emb_size)
@@ -143,12 +173,11 @@ class DecoderLayer(nn.Module):
         out = self.feed_forward(query)
         out = self.dropout(self.norm3(out + query))
 
-        # print(encoder_decoder_att.mean(axis=1)[:, 1:])
-
         return out
 
 
 class PositionalEncoding(nn.Module):
+    """目标序列正余弦位置编码"""
     def __init__(self, d_model, max_len=5000):
         super(PositionalEncoding, self).__init__()
         pe = torch.zeros(max_len, d_model)
@@ -166,6 +195,7 @@ class PositionalEncoding(nn.Module):
 
 
 class TransformerDecoder(nn.Module):
+    """Transformer解码器层"""
     def __init__(self, emb_size, num_heads, expansion, dropout, num_layers, target_vocab_size,
                  pretrained_embeddings=None):
         super(TransformerDecoder, self).__init__()
@@ -195,6 +225,7 @@ class TransformerDecoder(nn.Module):
 
 
 class ImageCaptioningModel(nn.Module):
+    """img2seq模型"""
     def __init__(self, img_size, in_channels, patch_size, emb_size, target_vocab_size, num_layers, num_heads, expansion, dropout, pretrained_embeddings=None):
         super(ImageCaptioningModel, self).__init__()
         self.encoder = VisionTransformerEncoder(in_channels=in_channels,
@@ -364,9 +395,13 @@ if __name__ == "__main__":
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     save_path = 'models/model_transformer.pth'
     experiment_name = 'fashion_description'
+    vocabulary_path = 'vocabulary/vocab.json'
+    word2vec_cache_path = 'vocabulary/word2vec.npy'
+    dataset_root = 'data/deepfashion-multimodal'
+    train_labels_path = 'data/deepfashion-multimodal/train_captions.json'
 
     # =================== Vocabulary and Image transforms ===================
-    vocabulary = Vocabulary('vocabulary/vocab.json')
+    vocabulary = Vocabulary(vocabulary_path)
     transform = Compose([
         Resize((img_size, img_size)),
         ToTensor(),
@@ -377,14 +412,14 @@ if __name__ == "__main__":
     # =================== Initialize the model ===================
     model = ImageCaptioningModel(img_size, in_channels, patch_size, emb_size, len(vocabulary), num_layers, num_heads,
                                  expansion, dropout,
-                                 pretrained_embeddings=vocabulary.get_word2vec(cache_path='vocabulary/word2vec.npy'))
+                                 pretrained_embeddings=vocabulary.get_word2vec(cache_path=word2vec_cache_path))
 
-    model.load_state_dict(torch.load('models/model_transformer.pth'))
+    model.load_state_dict(torch.load(save_path))
 
     # =================== Prepare for Training ===================
 
-    dataset = ImageTextDataset('data/deepfashion-multimodal',
-                               'data/deepfashion-multimodal/train_captions.json',
+    dataset = ImageTextDataset(dataset_root,
+                               train_labels_path,
                                vocabulary=vocabulary,
                                max_seq_len=seq_length,
                                transform=transform,
@@ -404,5 +439,3 @@ if __name__ == "__main__":
 
     caption_generated = predict(model, Image.open(image_path), transform, vocabulary, device, seq_length, mask_func, visualize=True)
     print(caption, '\n\n', caption_generated)
-
-

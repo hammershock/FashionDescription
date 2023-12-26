@@ -1,3 +1,23 @@
+"""
+ImageTextDataset for Image Captioning
+
+This module contains the implementation of a custom dataset class, ImageTextDataset,
+for image captioning tasks. The dataset loads images and their corresponding textual
+descriptions (captions). It supports caching of images to improve performance by
+reducing disk IO operations.
+
+The dataset requires a pre-processed JSON file containing image file names and their
+associated captions. It also utilizes a custom Vocabulary class for text processing
+and encoding.
+
+Author: zhanghanmo2021213368, hammershock
+Date: 2023/10/26
+License: MIT License
+Usage: This file is part of a larger project FashionDescription. It is not
+intended to be used independently.
+
+"""
+
 import json
 import os
 import random
@@ -51,7 +71,7 @@ class ImageTextDataset(Dataset):
         image_path = os.path.join(self.root_dir, 'images', self.filenames[idx])
         if image_path not in self.image_cache:
             image = self.transform(Image.open(image_path))
-            if len(self.image_cache) < self.max_cache_size:  # 60GB
+            if len(self.image_cache) < self.max_cache_size:
                 self.image_cache[image_path] = image  # 缓存图像
         else:
             image = self.image_cache[image_path]  # 从缓存中获取图像

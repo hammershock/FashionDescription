@@ -1,3 +1,29 @@
+"""
+Vocabulary for Image Captioning
+
+This module contains the implementation of a Vocabulary class used for
+image captioning tasks. The Vocabulary class handles text processing,
+encoding, and decoding functionalities. It supports creating a vocabulary
+from a given text corpus, encoding sentences into sequences of tokens,
+decoding token sequences back to sentences, and provides word embedding
+support via SpaCy.
+
+The Vocabulary class also includes functionality for handling special tokens
+like <pad>, <start>, <end>, and <unk>, and warnings for out-of-vocabulary words
+and missing end labels during decoding.
+
+Author: zhanghanmo2021213368, hammershock
+Date: 2023/10/26
+License: MIT License
+Usage: This file is part of a larger project FashionDescription.
+It is not intended to be used independently.
+
+Dependencies:
+- SpaCy: for text tokenization and word embeddings
+- NumPy: for numerical operations
+- JSON: for reading and writing vocabulary data
+"""
+
 import json
 import logging
 import os.path
@@ -5,7 +31,6 @@ import warnings
 from typing import List, Set, Iterable
 
 import numpy as np
-import torch
 from tqdm import tqdm
 import spacy
 
@@ -115,6 +140,7 @@ class Vocabulary:
 
 if __name__ == "__main__":
     # build vocabulary
+    # 展示从语料构建词表Vocabulary
     train_labels_path = 'data/deepfashion-multimodal/train_captions.json'
     with open(train_labels_path, 'rb') as fp:
         train_labels: dict = json.load(fp)
