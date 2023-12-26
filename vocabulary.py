@@ -1,9 +1,11 @@
 import json
 import logging
+import os.path
 import warnings
-from typing import List, Set
+from typing import List, Set, Iterable
 
 import numpy as np
+import torch
 from tqdm import tqdm
 import spacy
 
@@ -32,16 +34,18 @@ class Vocabulary:
         self.nlp = spacy.load("en_core_web_sm")
 
     @staticmethod
-    def build(raw_documents: List[str], save_path):
+    def build(raw_documents: Iterable[str], save_path):
         """
         Vocabulary Factory
         :param raw_documents:
         :param save_path:
         :return:
         """
+        if os.path.exists(save_path):
+            warnings.warn('vocabulary file already exists, this operation is going to overwrite it')
         content = {'<pad>': 0, '<start>': 1, '<end>': 2, '<unk>': 3}
         nlp = spacy.load("en_core_web_sm")
-        for raw_document in tqdm(raw_documents):
+        for raw_document in tqdm(raw_documents, desc='building vocabulary'):
             for token in nlp(raw_document):
                 if token.text.lower() not in content:
                     content[token.text.lower()] = len(content)
@@ -107,3 +111,12 @@ class Vocabulary:
         else:
             warnings.warn('没有在序列中发现终止符<end>', EndLabelNotFoundWarning)
         return self.post_process(' '.join(words))
+
+
+if __name__ == "__main__":
+    # build vocabulary
+    train_labels_path = 'data/deepfashion-multimodal/train_captions.json'
+    with open(train_labels_path, 'rb') as fp:
+        train_labels: dict = json.load(fp)
+    vocab = Vocabulary.build(train_labels.values(), 'vocabulary/vocab.json')
+

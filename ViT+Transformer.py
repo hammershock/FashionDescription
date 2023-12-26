@@ -8,6 +8,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from PIL import Image
+from matplotlib import pyplot as plt
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torchvision.transforms import Compose, Resize, ToTensor, Normalize
@@ -120,6 +121,7 @@ class DecoderLayer(nn.Module):
         self.encoder_attention = nn.MultiheadAttention(emb_size, num_heads, dropout=dropout)
         self.feed_forward = FeedForward(emb_size, expansion, dropout)
         self.dropout = nn.Dropout(dropout)
+        self.encoder_decoder_att = None  # (batch, seq_len, image_embed_size)
 
     def forward(self, x, enc_out, src_mask, trg_mask):
         # Self Attention
@@ -130,7 +132,8 @@ class DecoderLayer(nn.Module):
         query = self.dropout(self.norm1(attention_output + x))
 
         # Encoder-Decoder Attention
-        attention_output, _ = self.encoder_attention(query, enc_out, enc_out, attn_mask=src_mask)
+        attention_output, self.encoder_decoder_att = self.encoder_attention(query, enc_out, enc_out, attn_mask=src_mask)
+        # print(self.encoder_decoder_att.shape)  # (batch, seq_len, image_embed_size)
         query = self.dropout(self.norm2(attention_output + query))
 
         # Change shape back to [batch_size, seq_length, emb_size]
@@ -139,6 +142,8 @@ class DecoderLayer(nn.Module):
         # Feed Forward
         out = self.feed_forward(query)
         out = self.dropout(self.norm3(out + query))
+
+        # print(encoder_decoder_att.mean(axis=1)[:, 1:])
 
         return out
 
@@ -200,7 +205,7 @@ class ImageCaptioningModel(nn.Module):
                                                 num_heads=num_heads,
                                                 expansion=expansion,
                                                 dropout=dropout)
-        self.decoder = TransformerDecoder(emb_size=emb_size,
+        self.decoder = TransformerDecoder(emb_size=emb_size,  # 简单起见，编码器图像块与解码器文本嵌入使用相同的嵌入维度
                                           num_heads=num_heads,
                                           expansion=expansion,
                                           dropout=dropout,
@@ -217,6 +222,11 @@ class ImageCaptioningModel(nn.Module):
         encoder_output = self.encoder(images)  # [batch_size, n_patches + 1, emb_size]
         decoder_output = self.decoder(captions, encoder_output, src_mask, tgt_mask)
         return decoder_output  # [seq_length, batch_size, target_vocab_size]
+
+    def visualize(self):
+        att_weights = self.decoder.layers[-1].encoder_decoder_att
+        if att_weights is not None:
+            return att_weights[:, -1, 1:]
 
 
 def train(model, train_loader, criterion, optimizer, mask_func, save_path, device, epochs=10,
@@ -270,19 +280,20 @@ def train(model, train_loader, criterion, optimizer, mask_func, save_path, devic
     writer.close()
 
 
-def predict(model, image, transform, vocab, device, max_length, mask_func):
+def predict(model, original_image, transform, vocab, device, max_length, mask_func, visualize=False):
     model.to(device)
-    image = transform(image).unsqueeze(0).to(device)  # -> (1, channel, img_size, img_size)
+    image = transform(original_image).unsqueeze(0).to(device)  # -> (1, channel, img_size, img_size)
     seq = [vocab.start]
 
-    # 将图像和文本序列放入设备（例如 GPU）
-    image = image.to(device)
     seq = torch.tensor(seq, dtype=torch.long, device=device).unsqueeze(0)
 
     for _ in range(max_length):
         with torch.no_grad():
             tgt_mask = mask_func(seq)
             output = model(image, seq, tgt_mask=tgt_mask)
+        if visualize:
+            att_img = model.visualize()  # torch.Size([1, 196])
+            visualize_attention(original_image, att_img.squeeze(0), current_word=vocab.inv[seq[:, -1].item()])
 
         predicted = output.argmax(2)[:, -1]
         seq = torch.cat((seq, predicted.unsqueeze(1)), dim=1)
@@ -295,6 +306,39 @@ def predict(model, image, transform, vocab, device, max_length, mask_func):
     text = vocab.decode(seq)
 
     return text
+
+
+def visualize_attention(origin_image, att_img, current_word: str, img_size=224, patch_size=16):
+    """
+    可视化注意力权重为热力图，并与原始图像进行对比，同时显示当前生成的词。
+
+    :param origin_image: 原始图像
+    :param att_img: 注意力权重，形状为 [1, num_patches]
+    :param current_word: 当前生成的词
+    :param img_size: 输入图像的大小
+    :param patch_size: 每个块的大小
+    """
+    # 计算每个维度的块数
+    num_patches_side = img_size // patch_size
+
+    # 重新调整注意力权重的形状以匹配图像的尺寸
+    attention_map = att_img.reshape(num_patches_side, num_patches_side).cpu().detach().numpy()
+
+    # 设置绘图布局
+    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+
+    # 绘制原始图像
+    axes[0].imshow(origin_image)  # 假设 origin_image 已经是 (H, W, C) 格式
+    axes[0].set_title("Original Image")
+    axes[0].axis('off')
+
+    # 绘制热力图
+    im = axes[1].imshow(origin_image)  # 首先绘制原始图像
+    axes[1].imshow(attention_map, cmap='viridis', alpha=0.6)  # 再绘制热力图
+    axes[1].set_title(f"Attention for '{current_word}'")
+    axes[1].axis('off')
+
+    plt.show()
 
 
 def validate(model, val_loader, criterion, optimizer, mask_func, save_path, device):
@@ -322,7 +366,7 @@ if __name__ == "__main__":
     experiment_name = 'fashion_description'
 
     # =================== Vocabulary and Image transforms ===================
-    vocabulary = Vocabulary('vocab.json')
+    vocabulary = Vocabulary('vocabulary/vocab.json')
     transform = Compose([
         Resize((img_size, img_size)),
         ToTensor(),
@@ -333,7 +377,7 @@ if __name__ == "__main__":
     # =================== Initialize the model ===================
     model = ImageCaptioningModel(img_size, in_channels, patch_size, emb_size, len(vocabulary), num_layers, num_heads,
                                  expansion, dropout,
-                                 pretrained_embeddings=vocabulary.get_word2vec())
+                                 pretrained_embeddings=vocabulary.get_word2vec(cache_path='vocabulary/word2vec.npy'))
 
     model.load_state_dict(torch.load('models/model_transformer.pth'))
 
@@ -358,5 +402,7 @@ if __name__ == "__main__":
     #  =================== Model Inference ===================
     image_path, caption = dataset.sample()
 
-    caption_generated = predict(model, Image.open(image_path), transform, vocabulary, device, seq_length, mask_func)
+    caption_generated = predict(model, Image.open(image_path), transform, vocabulary, device, seq_length, mask_func, visualize=True)
     print(caption, '\n\n', caption_generated)
+
+

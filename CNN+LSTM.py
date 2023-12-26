@@ -181,7 +181,7 @@ if __name__ == "__main__":
 
     # ==================== Build Vocabulary ====================
 
-    vocabulary = Vocabulary('vocab.json')
+    vocabulary = Vocabulary('vocabulary/vocab.json')
 
     # ==================== Define image transforms ====================
 
@@ -193,7 +193,7 @@ if __name__ == "__main__":
 
     # ==================== Initialize the model ====================
     model = ImageTextModel(len(vocabulary), in_channels, img_emb_size, text_emb_size, hidden_size,
-                           pretrained_embeddings=vocabulary.get_word2vec()).to(device)
+                           pretrained_embeddings=vocabulary.get_word2vec(cache_path='vocabulary/word2vec.npy')).to(device)
 
     model.load_state_dict(torch.load('models/model_lstm.pth'))
 
