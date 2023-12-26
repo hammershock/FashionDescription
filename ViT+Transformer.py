@@ -13,7 +13,7 @@ adapted for standalone use and further development.
 Author: zhanghanmo2021213368, hammershock
 Date: 2023/10/26
 License: MIT License
-Usage: This file is part of the [Project Name/Description], specifically designed for
+Usage: This file is part of the Project FashionDescription, specifically designed for
        tasks involving image captioning with ViT and Transformer architecture.
 
 Dependencies:
@@ -28,7 +28,10 @@ Dependencies:
 import math
 import os
 from functools import partial
+from typing import List, Tuple
 
+import matplotlib
+import numpy as np
 import torch
 import torch.nn as nn
 from PIL import Image
@@ -42,10 +45,12 @@ from datetime import datetime, timedelta
 
 from datasets import ImageTextDataset
 from vocabulary import Vocabulary
+from metrics import bleu, meteor, rouge_l
 
 
 class PatchEmbedding(nn.Module):
     """ViT嵌入层，通过将原始图像分为若干个小块，分别嵌入，然后展平为序列"""
+
     def __init__(self, in_channels: int, patch_size: int, emb_size: int, img_size: int):
         super().__init__()
         self.patch_size = patch_size
@@ -61,6 +66,7 @@ class PatchEmbedding(nn.Module):
 
 class FeedForward(nn.Module):
     """编码器、解码器点对点前馈层"""
+
     def __init__(self, emb_size: int, expansion: int, dropout: float):
         super().__init__()
         self.fc1 = nn.Linear(emb_size, expansion * emb_size)
@@ -76,6 +82,7 @@ class FeedForward(nn.Module):
 
 class TransformerEncoderLayer(nn.Module):
     """ViT编码器层"""
+
     def __init__(self, emb_size: int, num_heads: int, expansion: int, dropout: float):
         super().__init__()
         self.norm1 = nn.LayerNorm(emb_size)
@@ -94,6 +101,7 @@ class TransformerEncoderLayer(nn.Module):
 
 class VisionTransformerEncoder(nn.Module):
     """ViT编码器"""
+
     def __init__(self, in_channels: int, patch_size: int, img_size: int, emb_size: int, num_layers: int, num_heads: int,
                  expansion: int, dropout: float):
         super().__init__()
@@ -142,6 +150,7 @@ def create_masks(target_seq, pad_idx, num_heads):
 
 class DecoderLayer(nn.Module):
     """transformer解码器层"""
+
     def __init__(self, emb_size, num_heads, expansion, dropout):
         super(DecoderLayer, self).__init__()
         self.norm1 = nn.LayerNorm(emb_size)
@@ -178,6 +187,7 @@ class DecoderLayer(nn.Module):
 
 class PositionalEncoding(nn.Module):
     """目标序列正余弦位置编码"""
+
     def __init__(self, d_model, max_len=5000):
         super(PositionalEncoding, self).__init__()
         pe = torch.zeros(max_len, d_model)
@@ -196,6 +206,7 @@ class PositionalEncoding(nn.Module):
 
 class TransformerDecoder(nn.Module):
     """Transformer解码器层"""
+
     def __init__(self, emb_size, num_heads, expansion, dropout, num_layers, target_vocab_size,
                  pretrained_embeddings=None):
         super(TransformerDecoder, self).__init__()
@@ -226,7 +237,9 @@ class TransformerDecoder(nn.Module):
 
 class ImageCaptioningModel(nn.Module):
     """img2seq模型"""
-    def __init__(self, img_size, in_channels, patch_size, emb_size, target_vocab_size, num_layers, num_heads, expansion, dropout, pretrained_embeddings=None):
+
+    def __init__(self, img_size, in_channels, patch_size, emb_size, target_vocab_size, num_layers, num_heads, expansion,
+                 dropout, pretrained_embeddings=None):
         super(ImageCaptioningModel, self).__init__()
         self.encoder = VisionTransformerEncoder(in_channels=in_channels,
                                                 patch_size=patch_size,
@@ -311,69 +324,100 @@ def train(model, train_loader, criterion, optimizer, mask_func, save_path, devic
     writer.close()
 
 
-def predict(model, original_image, transform, vocab, device, max_length, mask_func, visualize=False):
-    model.to(device)
-    image = transform(original_image).unsqueeze(0).to(device)  # -> (1, channel, img_size, img_size)
-    seq = [vocab.start]
+def generate_by_beam_search(model, image, vocab, device, max_length, mask_func, beam_width=5):
+    model = model.to(device)
+    image = image.to(device)  # (1, channel, img_size, img_size)
 
-    seq = torch.tensor(seq, dtype=torch.long, device=device).unsqueeze(0)
-
+    # 初始候选序列和分数
+    sequences = [([vocab.start], 0)]  # 每个序列是(token_list, score)
+    attn_images = []
+    model.eval()
     for _ in range(max_length):
-        with torch.no_grad():
-            tgt_mask = mask_func(seq)
-            output = model(image, seq, tgt_mask=tgt_mask)
-        if visualize:
-            att_img = model.visualize()  # torch.Size([1, 196])
-            visualize_attention(original_image, att_img.squeeze(0), current_word=vocab.inv[seq[:, -1].item()])
+        all_candidates = []
+        for seq, score in sequences:
+            if seq[-1] == vocab.end:
+                all_candidates.append((seq, score))
+                continue
 
-        predicted = output.argmax(2)[:, -1]
-        seq = torch.cat((seq, predicted.unsqueeze(1)), dim=1)
+            seq_tensor = torch.tensor(seq, dtype=torch.long, device=device).unsqueeze(0)
+            tgt_mask = mask_func(seq_tensor)
 
-        if predicted.item() == vocab.end:
-            break
+            with torch.no_grad():
+                output = model(image, seq_tensor, tgt_mask=tgt_mask)
+                attn_images.append((model.visualize(), vocab.inv[seq_tensor[:, -1].item()]))
+                # 抽取最后一个decoder层、第一个batch、序列最后一个的交叉注意力权重
 
-    # 将序列转换为单词列表'
-    seq = seq.squeeze(0).cpu().numpy().tolist()
-    text = vocab.decode(seq)
+            # 考虑top k个候选
+            top_k_probs, top_k_indices = torch.topk(torch.softmax(output, dim=-1), beam_width, dim=-1)
+            top_k_probs = top_k_probs[0, -1]
+            top_k_indices = top_k_indices[0, -1]
 
-    return text
+            for k in range(beam_width):
+                next_seq = seq + [top_k_indices[k].item()]
+                next_score = score - torch.log(top_k_probs[k])  # 使用负对数似然作为分数
+                all_candidates.append((next_seq, next_score))
+
+        # 按分数排序并选出前k个
+        ordered = sorted(all_candidates, key=lambda tup: tup[1])
+        sequences = ordered[:beam_width]
+
+    # 选择分数最高的序列
+    best_seq = sequences[0][0]
+    best_score = sequences[0][1].item()
+    text = vocab.decode(best_seq)
+    return text, best_score, attn_images
 
 
-def visualize_attention(origin_image, att_img, current_word: str, img_size=224, patch_size=16):
-    """
-    可视化注意力权重为热力图，并与原始图像进行对比，同时显示当前生成的词。
-
-    :param origin_image: 原始图像
-    :param att_img: 注意力权重，形状为 [1, num_patches]
-    :param current_word: 当前生成的词
-    :param img_size: 输入图像的大小
-    :param patch_size: 每个块的大小
-    """
-    # 计算每个维度的块数
+def visualize_attention(original_image, attn_maps: List[Tuple[torch.Tensor, str]], img_size=224, patch_size=16, max_cols=4):
     num_patches_side = img_size // patch_size
+    num_steps = len(attn_maps)
+    num_cols = min(num_steps, max_cols)
+    num_rows = math.ceil(num_steps / num_cols)
 
-    # 重新调整注意力权重的形状以匹配图像的尺寸
-    attention_map = att_img.reshape(num_patches_side, num_patches_side).cpu().detach().numpy()
+    fig, axs = plt.subplots(num_rows, num_cols + 1, figsize=(15, 6 * num_rows))
 
-    # 设置绘图布局
-    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+    for row in range(num_rows):
+        # 显示原始图像
+        axs[row, 0].imshow(original_image)
+        axs[row, 0].axis('off')
+        axs[row, 0].set_title('Original Image')
 
-    # 绘制原始图像
-    axes[0].imshow(origin_image)  # 假设 origin_image 已经是 (H, W, C) 格式
-    axes[0].set_title("Original Image")
-    axes[0].axis('off')
+    for idx, (attn_image, current_word) in enumerate(attn_maps):
+        # 转换注意力权重为热力图
+        attention_image = attn_image.reshape(num_patches_side, num_patches_side).cpu().detach().numpy()
 
-    # 绘制热力图
-    im = axes[1].imshow(origin_image)  # 首先绘制原始图像
-    axes[1].imshow(attention_map, cmap='viridis', alpha=0.6)  # 再绘制热力图
-    axes[1].set_title(f"Attention for '{current_word}'")
-    axes[1].axis('off')
+        # 将热力图大小调整为原始图像大小
+        resized_attention = np.array(Image.fromarray(attention_image).resize(original_image.size, Image.BILINEAR))
 
+        row = idx // num_cols
+        col = idx % num_cols + 1
+
+        # 在网格中显示注意力热力图
+        im = axs[row, col].imshow(resized_attention, cmap='hot',
+                                  norm=matplotlib.colors.Normalize(vmin=0, vmax=resized_attention.max()))
+        axs[row, col].axis('off')
+        axs[row, col].set_title(f'Step {idx + 1}\nWord: {current_word}')
+
+    plt.tight_layout()
     plt.show()
 
 
-def validate(model, val_loader, criterion, optimizer, mask_func, save_path, device):
-    pass
+def evaluate(model, test_set, vocabulary, mask_func, device, max_length, beam_width=5):
+    """评估模型性能"""
+    model.eval()
+    metrics = np.zeros(4)
+    p_bar = tqdm(range(len(test_set)), desc='evaluating')
+    for i in p_bar:
+        _, caption = test_set.get_pair(i)
+        image, _, _ = test_set[i]
+        caption_generated, score, _ = generate_by_beam_search(model, image.unsqueeze(0), vocabulary, device, max_length,
+                                                              mask_func, beam_width)
+        metrics += np.array([score,
+                             bleu(caption_generated, caption, vocabulary),
+                             rouge_l(caption_generated, caption, vocabulary),
+                             meteor(caption_generated, caption, vocabulary)])
+        value = metrics / (i + 1)
+        p_bar.set_postfix(score=value[0], bleu=value[1], rouge_l=value[2], meteor=value[3])
 
 
 if __name__ == "__main__":
@@ -383,7 +427,7 @@ if __name__ == "__main__":
     patch_size = 16  # Size of each patch
     emb_size = 96  # Embedding size
     num_layers = 6  # Number of layers in both encoder and decoder
-    num_heads = 8  # Number of attention heads
+    num_heads = 8  # Number of attention headsOpenhimer
     expansion = 4  # Expansion factor for feed forward network
 
     # =================== Train Config ===================
@@ -399,6 +443,7 @@ if __name__ == "__main__":
     word2vec_cache_path = 'vocabulary/word2vec.npy'
     dataset_root = 'data/deepfashion-multimodal'
     train_labels_path = 'data/deepfashion-multimodal/train_captions.json'
+    test_labels_path = 'data/deepfashion-multimodal/test_captions.json'
 
     # =================== Vocabulary and Image transforms ===================
     vocabulary = Vocabulary(vocabulary_path)
@@ -407,6 +452,7 @@ if __name__ == "__main__":
         ToTensor(),
         Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
+
     mask_func = partial(create_masks, pad_idx=vocabulary.pad, num_heads=num_heads)
 
     # =================== Initialize the model ===================
@@ -414,28 +460,46 @@ if __name__ == "__main__":
                                  expansion, dropout,
                                  pretrained_embeddings=vocabulary.get_word2vec(cache_path=word2vec_cache_path))
 
-    model.load_state_dict(torch.load(save_path))
+    if os.path.exists(save_path):
+        model.load_state_dict(torch.load(save_path))
 
     # =================== Prepare for Training ===================
 
-    dataset = ImageTextDataset(dataset_root,
-                               train_labels_path,
-                               vocabulary=vocabulary,
-                               max_seq_len=seq_length,
-                               transform=transform,
-                               max_cache_memory=32 * 1024 ** 3)
+    train_set = ImageTextDataset(dataset_root,
+                                 train_labels_path,
+                                 vocabulary=vocabulary,
+                                 max_seq_len=seq_length,
+                                 transform=transform,
+                                 max_cache_memory=32 * 1024 ** 3)
 
-    dataloader = DataLoader(dataset, batch_size, shuffle=True)
+    train_loader = DataLoader(train_set, batch_size, shuffle=True)
 
     criterion = nn.CrossEntropyLoss().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     # =================== Start Training ===================
-    # train(model, dataloader, criterion, optimizer, mask_func, save_path='models/model_transformer.pth',
+    # train(model, train_loader, criterion, optimizer, mask_func, save_path='models/model_transformer.pth',
     #       epochs=epochs, device=device, experiment_name=experiment_name)
 
     #  =================== Model Inference ===================
-    image_path, caption = dataset.sample()
+    test_set = ImageTextDataset(dataset_root,
+                                test_labels_path,
+                                vocabulary=vocabulary,
+                                max_seq_len=seq_length,
+                                transform=transform)
 
-    caption_generated = predict(model, Image.open(image_path), transform, vocabulary, device, seq_length, mask_func, visualize=True)
-    print(caption, '\n\n', caption_generated)
+    image_path, caption = test_set.sample()
+    original_image = Image.open(image_path)
+    image = transform(original_image).unsqueeze(0)
+    caption_generated, score, attn_images = generate_by_beam_search(model, image, vocabulary, device, seq_length,
+                                                                    mask_func, beam_width=5)
+
+    print('caption: ', caption, '\n\ngenerated: ', caption_generated, '\n')
+    print('best score: ', score)  # 序列全概率的负对数似然, 越小越好
+    print('bleu score: ', bleu(caption_generated, caption, vocabulary))
+    print('rouge-l score: ', rouge_l(caption_generated, caption, vocabulary))
+    print('meteor score: ', meteor(caption_generated, caption, vocabulary))
+
+    visualize_attention(original_image, attn_images)  # 绘制注意力图
+
+    evaluate(model, test_set, vocabulary, mask_func, device, seq_length, beam_width=5)  # 在测试集上评估模型

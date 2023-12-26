@@ -31,7 +31,7 @@ from vocabulary import Vocabulary
 
 
 class ImageTextDataset(Dataset):
-    def __init__(self, root_dir, label_path, vocabulary: Vocabulary, max_seq_len, transform=lambda x: x, max_cache_memory=16 * 1024 ** 3):
+    def __init__(self, root_dir, label_path, vocabulary: Vocabulary, max_seq_len, transform=lambda x: x, max_cache_memory=0):
         """
         Args:
             root_dir (string): Root directory of the dataset.

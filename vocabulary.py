@@ -101,6 +101,9 @@ class Vocabulary:
             np.save(cache_path, np.array(word2vecs))
             return np.array(word2vecs)
 
+    def split(self, string: str):
+        return [token.text.lower() for token in self.nlp(string)]
+
     @staticmethod
     def post_process(string: str):
         s1 = string.replace(' .', '.').replace(' ,', ',').replace(' -', '-').replace('- ', '-')  # 标点间隔0
